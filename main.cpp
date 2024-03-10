@@ -30,22 +30,31 @@ public:
 
     int playerX, playerY;
 
+    int playerScrollX, playerScrollY;
+
+    int scrollHorizontalLow, scrollHorizontalHigh;
+    int scrollVerticalLow, scrollVerticalHigh;
+
     GameInput input;
 
     AmazeManGame() : window(VideoMode(SCREEN_WIDTH, SCREEN_HEIGHT), "A maze man!")
     {
         window.setFramerateLimit(60);
 
-        mazeMapAsString = "1111111111111111111111111111111110000000000000000000000000100001101111111111111111111111111011011011000000000000000010001000110110110111111111111111101010111101101101111111111111100010101111011011011110000000000011101011000110100000001111111111111010110101101011111110000000000010001101011010111111101111101110111111010110001111111011111011101111110101101111111110111110111011111101011011111111101111101110111111010110001000000011111011100000000101111010111110111110111111111101011110101111100000000000000000010110101011111011111011111111010101101010111110111110100000010101011010101111111111101011110101010110101000000000011010111100010101100010111111110110101111110101111111101111111101100011111101010110000010000111111011111111010101101111101100000000111111110101011011111011111111111111100001010110111110001000000000000001110101100000001010101111111110000000011111111110101011111111101111111111100000001010000000000011111111111011111110111111111110111111111110000000000000001111100000000111111111111111111111111111111111";
+        // 32x32
+        // mazeMapAsString = "1111111111111111111111111111111110000000000000000000000000100001101111111111111111111111111011011011000000000000000010001000110110110111111111111111101010111101101101111111111111100010101111011011011110000000000011101011000110100000001111111111111010110101101011111110000000000010001101011010111111101111101110111111010110001111111011111011101111110101101111111110111110111011111101011011111111101111101110111111010110001000000011111011100000000101111010111110111110111111111101011110101111100000000000000000010110101011111011111011111111010101101010111110111110100000010101011010101111111111101011110101010110101000000000011010111100010101100010111111110110101111110101111111101111111101100011111101010110000010000111111011111111010101101111101100000000111111110101011011111011111111111111100001010110111110001000000000000001110101100000001010101111111110000000011111111110101011111111101111111111100000001010000000000011111111111011111110111111111110111111111110000000000000001111100000000111111111111111111111111111111111";
 
-        mapCols = 32;
-        mapRows = 32;
+        // 16x16
+        mazeMapAsString = "1111111111111111100000000000000110111011110111011001001111001001100100000000100110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011111111111111101";
 
-        tileWidth = 32;
-        tileHeight = 32;
+        mapCols = 16;
+        mapRows = 16;
 
-        gameViewWidth = 10 * tileWidth;
-        gameViewHeight = 10 * tileHeight;
+        tileWidth = 48;
+        tileHeight = 48;
+
+        gameViewWidth = 6 * tileWidth;
+        gameViewHeight = 6 * tileHeight;
 
         gameViewRows = gameViewHeight / tileHeight;
         gameViewCols = gameViewWidth / tileWidth;
@@ -59,8 +68,14 @@ public:
         boardViewRow = 0;
         boardViewCol = 0;
 
+        playerScrollX = 0;
+        playerScrollY = 0;
+
         playerX = 1 * tileWidth;
         playerY = 1 * tileHeight;
+
+        scrollHorizontalHigh = (gameViewCols - 2) * tileWidth;
+        scrollHorizontalLow = 1 * tileWidth;
 
         mazeMap = new int *[mapRows];
         for (int i = 0; i < mapRows; ++i)
@@ -76,6 +91,7 @@ public:
                 mazeMap[i][j] = mazeMapAsString[idx++] - '0'; // char to int
             }
         }
+
     }
 
     void Start()
@@ -175,10 +191,68 @@ public:
         if (input.moveX > 0)
         {
             playerX++;
+
+            if (playerX > scrollHorizontalHigh) // reached x max checkpoint
+            {
+                if (boardViewCol == mapCols - gameViewCols)
+                {
+                    // it means the player can't scroll the map any further and playerX++ is ok here
+
+                     if (playerScrollX < 0) { // but if screen was partially scrolled left, we must rewind
+                         playerScrollX++;
+                         playerX = scrollHorizontalHigh; // and then we need to keep player still so it doesnt look like he moves faster
+                    }
+
+                }
+                else
+                {
+                    playerX = scrollHorizontalHigh;
+
+                    playerScrollX++; // scroll right and keep player at max checkpoint pos
+
+                    if (playerScrollX == tileWidth) // 1 col scrolled
+                    { 
+                        if (boardViewCol < mapCols - gameViewCols) // must be < as 16-6=10 means 10 is last possible boardViewCol
+                        {                   
+                            boardViewCol++; // move board viewport +1
+                        }
+
+                        playerScrollX = 0; // reset scroll
+                    }
+                }
+            }
         }
         else if (input.moveX < 0)
         {
             playerX--;
+
+            if (playerX < scrollHorizontalLow) // reached x min checkpoint
+            {
+                if (boardViewCol == 0)
+                {
+                    // it means the player can't scroll the map any further and playerX-- is ok here
+
+                    if (playerScrollX > 0) { // but if screen was partially scrolled right, we must rewind
+                         playerScrollX--;
+                    }
+                }
+                else
+                {
+                    playerX = scrollHorizontalLow;
+
+                    playerScrollX--; // scroll left and keep player at min checkpoint pos
+
+                    if (abs(playerScrollX) == tileWidth) // 1 col scrolled
+                    { 
+                        if (boardViewCol > 0 ) // must be > as 0 is lowest possible boardViewCol
+                        {                   
+                            boardViewCol--; // move board viewport -1
+                        }
+
+                        playerScrollX = 0; // reset scroll
+                    }
+                }
+            }
         }
 
         if (input.moveY > 0)
@@ -257,8 +331,8 @@ public:
     {
         sf::RectangleShape tile;
         tile.setSize(sf::Vector2f(w, h));
-        tile.setFillColor(sf::Color(0, 0, 255));
-        tile.setPosition(x, y);
+        tile.setFillColor(sf::Color(0, 0, 220));
+        tile.setPosition(gameViewOffsetX + x, gameViewOffsetY + y);
         window.draw(tile);
     }
 
@@ -268,18 +342,19 @@ public:
         rectangle.setPosition(gameViewOffsetX, gameViewOffsetY);
         rectangle.setFillColor(sf::Color::Transparent);
         rectangle.setOutlineThickness(1);
-        rectangle.setOutlineColor(sf::Color::Red);
+        rectangle.setOutlineColor(sf::Color(150, 0, 0));
         window.draw(rectangle);
     }
 
     void renderMazeMap()
     {
-        std::cout << "board offset is: " << boardViewRow << " " << boardViewCol << std::endl;
+        std::cout << "boardViewCol: " << boardViewCol << " playerX: " << playerX << " playerScrollX: " << playerScrollX << std::endl;
 
         bool debug = 1;
 
         if (debug)
         {
+
             // shows +1 extra row/col outside gameView box
             for (int i = 0; i < gameViewRows + 2; ++i)
             {
@@ -292,12 +367,40 @@ public:
                         if (mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j] == 1)
                         {
                             renderTile(
-                                gameViewOffsetX - (tileWidth) + (j * tileWidth),
-                                gameViewOffsetY - (tileWidth) + (i * tileHeight),
+                                (j * tileWidth) - playerScrollX - tileWidth, // shows -1 col
+                                (i * tileHeight) - playerScrollY - tileWidth,
                                 tileWidth, tileHeight);
                         }
                     }
                 }
+            }
+
+            if (1) // debug
+            {
+                // top
+                sf::RectangleShape tile;
+                tile.setSize(sf::Vector2f(SCREEN_WIDTH, tileHeight * 2));
+                tile.setFillColor(sf::Color(0, 0, 150));
+                tile.setPosition(0, 0);
+                window.draw(tile);
+
+                // left
+                tile.setSize(sf::Vector2f(tileHeight * 2, SCREEN_HEIGHT));
+                tile.setFillColor(sf::Color(0, 0, 150));
+                tile.setPosition(0, tileHeight * 2);
+                window.draw(tile);
+
+                // right
+                tile.setSize(sf::Vector2f(tileHeight * 2, SCREEN_HEIGHT));
+                tile.setFillColor(sf::Color(0, 0, 150));
+                tile.setPosition(tileHeight * 8, tileHeight * 2);
+                window.draw(tile);
+
+                // bottom
+                tile.setSize(sf::Vector2f(SCREEN_WIDTH, tileHeight * 2));
+                tile.setFillColor(sf::Color(0, 0, 150));
+                tile.setPosition(0, tileHeight * 8);
+                window.draw(tile);
             }
         }
         else
@@ -309,8 +412,8 @@ public:
                     if (mazeMap[boardViewRow + i][boardViewCol + j] == 1)
                     {
                         renderTile(
-                            gameViewOffsetX + (j * tileWidth),
-                            gameViewOffsetY + (i * tileHeight),
+                            gameViewOffsetX + (j * tileWidth) - playerScrollX,
+                            gameViewOffsetY + (i * tileHeight) - playerScrollY,
                             tileWidth, tileHeight);
                     }
                 }
@@ -327,6 +430,7 @@ public:
 
                 if (mazeMap[i][j] == 1)
                 {
+                    // bug here as renderTile uses gameViewOffsetX anyway
                     renderTile(j * tileWidth, i * tileHeight, tileWidth, tileHeight);
                 }
             }
