@@ -77,6 +77,9 @@ public:
         scrollHorizontalHigh = (gameViewCols - 2) * tileWidth;
         scrollHorizontalLow = 1 * tileWidth;
 
+        scrollVerticalHigh = (gameViewRows - 2) * tileHeight;
+        scrollVerticalLow = 1 * tileHeight;
+
         mazeMap = new int *[mapRows];
         for (int i = 0; i < mapRows; ++i)
         {
@@ -258,6 +261,36 @@ public:
         if (input.moveY > 0)
         {
             playerY++;
+
+            if (playerY > scrollVerticalHigh)
+            {
+                if (boardViewRow == mapRows - gameViewRows)
+                {
+                    
+                     if (playerScrollY < 0) { 
+                         playerScrollY++;
+                         playerY = scrollVerticalHigh;
+                    }
+
+                }
+                else
+                {
+                    playerY = scrollVerticalHigh;
+
+                    playerScrollY++; 
+
+                    if (playerScrollY == tileWidth)
+                    { 
+                        if (boardViewRow < mapRows - gameViewRows) 
+                        {                   
+                            boardViewRow++; 
+                        }
+
+                        playerScrollY = 0;
+                    }
+                }
+            }
+
         }
         else if (input.moveY < 0)
         {
