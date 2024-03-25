@@ -37,15 +37,19 @@ public:
 
     GameInput input;
 
+    bool debug_mode;
+
     AmazeManGame() : window(VideoMode(SCREEN_WIDTH, SCREEN_HEIGHT), "A maze man!")
     {
         window.setFramerateLimit(60);
+
+        debug_mode = 0;
 
         // 32x32
         mazeMapAsString = "1111111111111111111111111111111110000000000000000000000000100001101111111111111111111111111011011011000000000000000010001000110110110111111111111111101010111101101101111111111111100010101111011011011110000000000011101011000110100000001111111111111010110101101011111110000000000010001101011010111111101111101110111111010110001111111011111011101111110101101111111110111110111011111101011011111111101111101110111111010110001000000011111011100000000101111010111110111110111111111101011110101111100000000000000000010110101011111011111011111111010101101010111110111110100000010101011010101111111111101011110101010110101000000000011010111100010101100010111111110110101111110101111111101111111101100011111101010110000010000111111011111111010101101111101100000000111111110101011011111011111111111111100001010110111110001000000000000001110101100000001010101111111110000000011111111110101011111111101111111111100000001010000000000011111111111011111110111111111110111111111110000000000000001111100000000111111111111111111111111111111111";
 
         // 16x16
-        //mazeMapAsString = "1111111111111111100000000000000110111011110111011001001111001001100100000000100110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011111111111111101";
+        // mazeMapAsString = "1111111111111111100000000000000110111011110111011001001111001001100100000000100110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011111111111111101";
 
         mapCols = 32;
         mapRows = 32;
@@ -53,17 +57,28 @@ public:
         tileWidth = 48;
         tileHeight = 48;
 
-        gameViewWidth = 6 * tileWidth;
-        gameViewHeight = 6 * tileHeight;
+        if (debug_mode)
+        {
+            gameViewWidth = 6 * tileWidth;
+            gameViewHeight = 6 * tileHeight;
 
-        gameViewRows = gameViewHeight / tileHeight;
-        gameViewCols = gameViewWidth / tileWidth;
+            gameViewRow = 2;
+            gameViewCol = 2;
+        }
+        else
+        {
+            gameViewWidth = 10 * tileWidth;
+            gameViewHeight = 10 * tileHeight;
 
-        gameViewRow = 2;
-        gameViewCol = 2;
+            gameViewRow = 0;
+            gameViewCol = 0;
+        }
 
         gameViewOffsetX = gameViewRow * tileWidth;
         gameViewOffsetY = gameViewCol * tileHeight;
+
+        gameViewRows = gameViewHeight / tileHeight;
+        gameViewCols = gameViewWidth / tileWidth;
 
         boardViewRow = 0;
         boardViewCol = 0;
@@ -94,7 +109,6 @@ public:
                 mazeMap[i][j] = mazeMapAsString[idx++] - '0'; // char to int
             }
         }
-
     }
 
     void Start()
@@ -201,11 +215,11 @@ public:
                 {
                     // it means the player can't scroll the map any further and playerX++ is ok here
 
-                     if (playerScrollX < 0) { // but if screen was partially scrolled left, we must rewind
-                         playerScrollX++;
-                         playerX = scrollHorizontalHigh; // and then we need to keep player still so it doesnt look like he moves faster
+                    if (playerScrollX < 0)
+                    { // but if screen was partially scrolled left, we must rewind
+                        playerScrollX++;
+                        playerX = scrollHorizontalHigh; // and then we need to keep player still so it doesnt look like he moves faster
                     }
-
                 }
                 else
                 {
@@ -214,9 +228,9 @@ public:
                     playerScrollX++; // scroll right and keep player at max checkpoint pos
 
                     if (playerScrollX == tileWidth) // 1 col scrolled
-                    { 
+                    {
                         if (boardViewCol < mapCols - gameViewCols) // must be < as 16-6=10 means 10 is last possible boardViewCol
-                        {                   
+                        {
                             boardViewCol++; // move board viewport +1
                         }
 
@@ -235,9 +249,10 @@ public:
                 {
                     // it means the player can't scroll the map any further and playerX-- is ok here
 
-                    if (playerScrollX > 0) { // but if screen was partially scrolled right, we must rewind
-                         playerScrollX--;
-                         playerX = scrollHorizontalLow;
+                    if (playerScrollX > 0)
+                    { // but if screen was partially scrolled right, we must rewind
+                        playerScrollX--;
+                        playerX = scrollHorizontalLow;
                     }
                 }
                 else
@@ -247,9 +262,9 @@ public:
                     playerScrollX--; // scroll left and keep player at min checkpoint pos
 
                     if (abs(playerScrollX) == tileWidth) // 1 col scrolled
-                    { 
-                        if (boardViewCol > 0 ) // must be > as 0 is lowest possible boardViewCol
-                        {                   
+                    {
+                        if (boardViewCol > 0) // must be > as 0 is lowest possible boardViewCol
+                        {
                             boardViewCol--; // move board viewport -1
                         }
 
@@ -267,31 +282,30 @@ public:
             {
                 if (boardViewRow == mapRows - gameViewRows)
                 {
-                    
-                     if (playerScrollY < 0) { 
-                         playerScrollY++;
-                         playerY = scrollVerticalHigh;
-                    }
 
+                    if (playerScrollY < 0)
+                    {
+                        playerScrollY++;
+                        playerY = scrollVerticalHigh;
+                    }
                 }
                 else
                 {
                     playerY = scrollVerticalHigh;
 
-                    playerScrollY++; 
+                    playerScrollY++;
 
                     if (playerScrollY == tileWidth)
-                    { 
-                        if (boardViewRow < mapRows - gameViewRows) 
-                        {                   
-                            boardViewRow++; 
+                    {
+                        if (boardViewRow < mapRows - gameViewRows)
+                        {
+                            boardViewRow++;
                         }
 
                         playerScrollY = 0;
                     }
                 }
             }
-
         }
         else if (input.moveY < 0)
         {
@@ -303,9 +317,10 @@ public:
                 {
                     // it means the player can't scroll the map any further and playerY-- is ok here
 
-                    if (playerScrollY > 0) { // but if screen was partially scrolled up, we must rewind
-                         playerScrollY--;
-                         playerY = scrollVerticalLow;
+                    if (playerScrollY > 0)
+                    { // but if screen was partially scrolled up, we must rewind
+                        playerScrollY--;
+                        playerY = scrollVerticalLow;
                     }
                 }
                 else
@@ -315,9 +330,9 @@ public:
                     playerScrollY--; // scroll down and keep player at min checkpoint pos
 
                     if (abs(playerScrollY) == tileHeight) // 1 row scrolled
-                    { 
-                        if (boardViewRow > 0 ) // must be > as 0 is lowest possible boardViewRow
-                        {                   
+                    {
+                        if (boardViewRow > 0) // must be > as 0 is lowest possible boardViewRow
+                        {
                             boardViewRow--; // move board viewport -1
                         }
 
@@ -325,7 +340,6 @@ public:
                     }
                 }
             }
-
         }
 
         // MOVE MAP (debug)
@@ -414,9 +428,7 @@ public:
     {
         std::cout << "boardViewCol: " << boardViewCol << " playerX: " << playerX << " playerScrollX: " << playerScrollX << std::endl;
 
-        bool debug = 1;
-
-        if (debug)
+        if (debug_mode)
         {
 
             // shows +1 extra row/col outside gameView box
@@ -439,7 +451,7 @@ public:
                 }
             }
 
-            if (1) // debug
+            if (0) // debug
             {
                 // top
                 sf::RectangleShape tile;
@@ -469,19 +481,39 @@ public:
         }
         else
         {
-            for (int i = 0; i < gameViewRows; ++i)
+            // shows +1 extra row/col outside gameView box
+            for (int i = 0; i < gameViewRows + 2; ++i)
             {
-                for (int j = 0; j < gameViewCols; ++j)
+                for (int j = 0; j < gameViewCols + 2; ++j)
                 {
-                    if (mazeMap[boardViewRow + i][boardViewCol + j] == 1)
+                    if ((boardViewRow - 1 + i >= 0) and (boardViewCol - 1 + j >= 0) and (boardViewCol - 1 + j < mapCols) // if mapCols is 32 then max j is 31 !!!
+                        and (boardViewRow - 1 + i < mapRows))
                     {
-                        renderTile(
-                            gameViewOffsetX + (j * tileWidth) - playerScrollX,
-                            gameViewOffsetY + (i * tileHeight) - playerScrollY,
-                            tileWidth, tileHeight);
+
+                        if (mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j] == 1)
+                        {
+                            renderTile(
+                                (j * tileWidth) - playerScrollX - tileWidth, // shows -1 col
+                                (i * tileHeight) - playerScrollY - tileWidth,
+                                tileWidth, tileHeight);
+                        }
                     }
                 }
             }
+
+            // for (int i = 0; i < gameViewRows; ++i)
+            // {
+            //     for (int j = 0; j < gameViewCols; ++j)
+            //     {
+            //         if (mazeMap[boardViewRow + i][boardViewCol + j] == 1)
+            //         {
+            //             renderTile(
+            //                 (j * tileWidth) - playerScrollX,
+            //                 (i * tileHeight) - playerScrollY,
+            //                 tileWidth, tileHeight);
+            //         }
+            //     }
+            // }
         }
     }
 
