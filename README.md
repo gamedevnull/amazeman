@@ -1,10 +1,10 @@
 # Amazeman!
 
-This will be a 2D top-down maze escape game.
+2D top-down maze game example.
 
 ![With graphic](./screen.png)
 
-My goal was to figure out by myself how to implement scrolling maps in the game. 
+My goal was to figure out by myself how to implement map scrolling. 
 
 Currently that works fine. 
 
@@ -15,7 +15,5 @@ DONE
 - partial map rendering in the viewport
 - scrolling when the player moves around
 - wall collisions
-
-TODO
-- separate class for map scrolling and wall collisions, refactor, etc
-- configuration for game elements like width, height, etc
+- enemy collisions
+- game states

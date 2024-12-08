@@ -1,804 +1,921 @@
 #include <iostream>
 #include <SFML/Graphics.hpp>
+#include <cstdlib>
+#include <ctime>
+
+using namespace std;
 using namespace sf;
-#include "include/globals.hpp"
-#include "include/Player.hpp"
+
+const int SCREEN_WIDTH = 320;
+const int SCREEN_HEIGHT = 320;
+
+const int OBJECT_ID_PLAYER = 1;
+const int OBJECT_ID_ENEMY = 2;
+
+const int SCROLL_BOUND = 224;
+
+enum class GameState
+{
+  StartScreen,
+  Playing,
+  GameOver
+};
+
+class AIComponent
+{
+public:
+  int dirX, dirY;
+  void RandomizeMoveDirection()
+  {
+    dirX = (rand() % 3) - 1;
+    dirY = (rand() % 3) - 1;
+    if (dirX == 0 && dirY == 0)
+    {
+      RandomizeMoveDirection();
+    }
+  }
+};
+
+class Animation
+{
+public:
+  sf::Texture *texture;
+  sf::IntRect frameSelection;
+  int frameWidth, frameHeight, framesCount;
+  float delay, timer;
+
+  Animation(sf::Texture *texture, int frameWidth, int frameHeight, int framesCount, int firstFrameX, int firstFrameY, float animationDelay)
+      : texture(texture), frameWidth(frameWidth), frameHeight(frameHeight), framesCount(framesCount), delay(animationDelay), timer(0)
+  {
+    frameSelection = sf::IntRect(firstFrameX, firstFrameY, frameWidth, frameHeight);
+  }
+
+  void Update(float deltaTime)
+  {
+    timer += deltaTime;
+    if (timer > delay)
+    {
+      nextFrame();
+      timer = 0;
+    }
+  }
+
+  void applyToSprite(sf::Sprite &sprite)
+  {
+    sprite.setTexture(*texture);
+    sprite.setTextureRect(frameSelection);
+  }
+
+private:
+  void nextFrame()
+  {
+    frameSelection.left = (frameSelection.left + frameWidth) % (frameWidth * framesCount);
+  }
+};
+
+class AnimationComponent
+{
+public:
+  void addAnimation(int state, Animation *animation)
+  {
+    animations[state] = animation;
+  }
+
+  void setAnimation(int state)
+  {
+    if (currentState != state && animations.count(state))
+    {
+      currentState = state;
+      currentAnimation = animations[state];
+    }
+  }
+
+  void Update(float deltaTime, sf::Sprite &sprite)
+  {
+    if (currentAnimation)
+    {
+      currentAnimation->Update(deltaTime);
+      currentAnimation->applyToSprite(sprite);
+    }
+  }
+
+private:
+  std::map<int, Animation *> animations;
+  Animation *currentAnimation = nullptr;
+  int currentState = -1;
+};
+
+class PositionComponent
+{
+public:
+  float x, y;
+  PositionComponent(float x = 0, float y = 0) : x(x), y(y) {}
+};
+
+class OffsetComponent
+{
+public:
+  int x, y;
+  OffsetComponent(int x = 0, int y = 0) : x(x), y(y) {}
+};
+
+class SizeComponent
+{
+public:
+  int w, h;
+  SizeComponent(int w = 0, int h = 0) : w(w), h(h) {}
+};
+
+class StateComponent
+{
+public:
+  enum BaseState
+  {
+    Idle = 0
+  };
+
+  virtual void setState(int newState)
+  {
+    if (currentState != newState)
+    {
+      if (onStateChange)
+      {
+        onStateChange(currentState, newState);
+      }
+      previousState = currentState;
+      currentState = newState;
+    }
+  }
+
+  int getState() const
+  {
+    return currentState;
+  }
+
+  int getPreviousState() const
+  {
+    return previousState;
+  }
+
+  void setStateChangeCallback(std::function<void(int, int)> callback)
+  {
+    onStateChange = callback;
+  }
+
+protected:
+  int currentState = Idle;
+  int previousState = -1;
+  std::function<void(int, int)> onStateChange = nullptr;
+};
+
+class PlayerStateComponent : public StateComponent
+{
+public:
+  enum PlayerState
+  {
+    GoingUp = 1,
+    GoingDown,
+    GoingLeft,
+    GoingRight
+  };
+
+  void setState(int newState) override
+  {
+    if (isValidState(newState))
+    {
+      StateComponent::setState(newState);
+    }
+  }
+
+private:
+  bool isValidState(int state)
+  {
+    return state == Idle ||
+           state == GoingUp ||
+           state == GoingDown ||
+           state == GoingLeft ||
+           state == GoingRight;
+  }
+};
+
+class GameMap
+{
+public:
+  int mapCols, mapRows;
+  int **mapArray;
+  int mapViewCols, mapViewRows;
+  int tileWidth, tileHeight;
+  OffsetComponent *scroll;
+  Texture *mapTexture;
+
+  GameMap(const char *data, int cols, int rows, OffsetComponent *offset, Texture *texture)
+  {
+    mapCols = cols;
+    mapRows = rows;
+
+    mapViewCols = 10;
+    mapViewRows = 10;
+
+    tileWidth = 32;
+    tileHeight = 32;
+
+    scroll = offset;
+
+    mapTexture = texture;
+
+    initMap();
+    fillMap(data);
+  }
+
+  void initMap()
+  {
+    mapArray = new int *[mapRows];
+    for (int i = 0; i < mapRows; ++i)
+    {
+      mapArray[i] = new int[mapCols];
+    }
+  }
+
+  void fillMap(const char *mapData)
+  {
+    int idx = 0;
+    for (int i = 0; i < mapRows; ++i)
+    {
+      for (int j = 0; j < mapCols; ++j)
+      {
+        char tileStr[5];
+        for (int ii = 0; ii < 4; ii++)
+        {
+          tileStr[ii] = mapData[idx + ii];
+        }
+        tileStr[4] = '\0';
+
+        mapArray[i][j] = std::stoi(tileStr);
+        idx += 4;
+      }
+    }
+  }
+
+  bool IsWalkable(int newX, int newY, int buffer = 0, int playerSizeX = 20, int playerSizeY = 20, int tileSize = 32)
+  {
+    int mapWidth = mapCols;
+    int mapHeight = mapRows;
+
+    int topLeftX = static_cast<int>(newX - buffer) / tileSize;
+    int topLeftY = static_cast<int>(newY - buffer) / tileSize;
+
+    int bottomRightX = static_cast<int>(newX + playerSizeX + buffer - 1) / tileSize;
+    int bottomRightY = static_cast<int>(newY + playerSizeY + buffer - 1) / tileSize;
+
+    for (int x = topLeftX; x <= bottomRightX; ++x)
+    {
+      for (int y = topLeftY; y <= bottomRightY; ++y)
+      {
+        if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight)
+        {
+          return false;
+        }
+
+        if (mapArray[y][x] > 0)
+        {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  int getMaxScrollX()
+  {
+    return (mapCols * tileWidth) - (mapViewCols * tileWidth);
+  }
+
+  int getMaxScrollY()
+  {
+    return (mapRows * tileHeight) - (mapViewRows * tileHeight);
+  }
+
+  void Render(sf::RenderWindow &window)
+  {
+    drawMap(window);
+  }
+
+  void drawMap(sf::RenderWindow &window)
+  {
+    int scrollX = scroll->x;
+    int scrollY = scroll->y;
+
+    int mapOffsetCol = scrollX / tileWidth;
+    int mapOffsetRow = scrollY / tileHeight;
+
+    int offset_scroll_x = scrollX % tileWidth;
+    int offset_scroll_y = scrollY % tileHeight;
+
+    int extraRowCol = 2; // +1 extra row/col outside gameView box (left + right = +2)
+
+    for (int i = 0; i < mapViewRows + extraRowCol; ++i)
+    {
+      for (int j = 0; j < mapViewCols + extraRowCol; ++j)
+      {
+        if (
+            (mapOffsetRow - 1 + i >= 0) and
+            (mapOffsetCol - 1 + j >= 0) and
+            (mapOffsetCol - 1 + j < mapCols) and // if mapCols is 32 then max j is 31 !!! TODO really?
+            (mapOffsetRow - 1 + i < mapRows))
+        {
+          if (mapArray[mapOffsetRow - 1 + i][mapOffsetCol - 1 + j] > 0)
+          {
+            drawTexturedTile(
+                (j * tileWidth) - offset_scroll_x - tileWidth, // shows -1 col TODO what?
+                (i * tileHeight) - offset_scroll_y - tileWidth,
+                mapArray[mapOffsetRow - 1 + i][mapOffsetCol - 1 + j],
+                window);
+          }
+        }
+      }
+    }
+  }
+
+  void drawTile(int x, int y, int tile_index, sf::RenderWindow &window)
+  {
+    sf::RectangleShape tile;
+    tile.setSize(sf::Vector2f(tileWidth, tileHeight));
+    tile.setFillColor(sf::Color(0, 0, 255));
+    tile.setPosition(x, y);
+    window.draw(tile);
+  }
+
+  void drawTexturedTile(int x, int y, int tile_index, sf::RenderWindow &window)
+  {
+    tile_index--; // as 1 is actially index 0 in tiles array
+
+    Vector2u bgTextureSize;
+    bgTextureSize = mapTexture->getSize();
+
+    int bgCols = bgTextureSize.x / tileWidth; // TODO as for tileWidth -> is tile size in texture file always equals tile size in world map?
+    int bgRow = tile_index / bgCols;
+    int bgCol = tile_index % bgCols;
+
+    Sprite bgSprite;
+    IntRect frameSelection;
+
+    bgSprite.setTexture(*mapTexture);
+    frameSelection = IntRect(bgCol * tileWidth, bgRow * tileHeight, tileWidth, tileHeight);
+
+    bgSprite.setTextureRect(frameSelection);
+    bgSprite.setPosition(x, y);
+
+    window.draw(bgSprite);
+  }
+};
+
+class MoveComponent
+{
+public:
+  PositionComponent &position;
+  GameMap *map;
+  int objSizeX, objSizeY;
+  float objSpeed = 1;
+
+  MoveComponent(PositionComponent &pos, GameMap *map = nullptr, int objSizeX = 0, int objSizeY = 0)
+      : position(pos), map(map), objSizeX(objSizeX), objSizeY(objSizeY) {}
+
+  void SetMap(GameMap *newMap)
+  {
+    map = newMap;
+  }
+
+  bool Move(float dx, float dy, float deltaTime)
+  {
+    float moveX = dx * objSpeed * deltaTime;
+    float moveY = dy * objSpeed * deltaTime;
+
+    if (map && map->IsWalkable(static_cast<int>(position.x + moveX), static_cast<int>(position.y + moveY), 0, objSizeX, objSizeY))
+    {
+      position.x += moveX;
+      position.y += moveY;
+      return true;
+    }
+    return false;
+  }
+};
+
+class GameObject
+{
+public:
+  PositionComponent *position;
+  OffsetComponent *offset;
+  SizeComponent *size;
+  MoveComponent *moveComponent;
+  int objId;
+
+  GameObject(OffsetComponent *offset) : offset(offset)
+  {
+    position = new PositionComponent();
+    size = new SizeComponent();
+    size->w = 20;
+    size->h = 20;
+
+    moveComponent = nullptr;
+  }
+
+  void Init(int posX, int posY, int id, int sizeX = 20, int sizeY = 20)
+  {
+    position->x = posX;
+    position->y = posY;
+    size->w = sizeX;
+    size->h = sizeY;
+    objId = id;
+    moveComponent = new MoveComponent(*position, nullptr, size->w, size->h);
+    moveComponent->objSpeed = 1;
+  }
+
+  virtual void Update(float deltaTime) {}
+
+  virtual void Render(sf::RenderWindow &window)
+  {
+    sf::RectangleShape tile;
+    tile.setSize(sf::Vector2f(size->w, size->h));
+    tile.setFillColor(sf::Color(0, 0, 255));
+    tile.setPosition(position->x - offset->x, position->y - offset->y);
+    window.draw(tile);
+  }
+
+  bool Collided(GameObject *otherObject)
+  {
+    if (position->x < otherObject->position->x + otherObject->size->w &&
+        position->x + size->w > otherObject->position->x &&
+        position->y < otherObject->position->y + otherObject->size->h &&
+        position->y + size->h > otherObject->position->y)
+    {
+      return true;
+    }
+    return false;
+  }
+};
 
 class GameInput
 {
 public:
-    int moveX, moveY;
-    bool keyW, keyS, keyA, keyD, keyX;
-    GameInput() : moveX(0), moveY(0), keyW(0), keyS(0), keyA(0), keyD(0), keyX(0) {}
+  int moveX, moveY;
+  bool keyW, keyS, keyA, keyD, keyX;
+  GameInput() : moveX(0), moveY(0), keyW(0), keyS(0), keyA(0), keyD(0), keyX(0) {}
 };
 
-class AmazeManGame
+class PlayerControllerComponent
 {
 public:
-    RenderWindow window;
+  GameInput &input;
+  PlayerStateComponent *stateComponent;
+  PlayerControllerComponent(GameInput &input) : input(input)
+  {
+    stateComponent = nullptr;
+  }
 
-    const char *mazeMapAsString;
-    int **mazeMap;
-    int mapCols, mapRows;
-    int tileWidth, tileHeight;
+  void setStateComponent(PlayerStateComponent *stateComponent1)
+  {
+    stateComponent = stateComponent1;
+  }
 
-    int gameViewWidth, gameViewHeight, gameViewOffsetX, gameViewOffsetY, gameViewRow, gameViewCol, gameViewRows, gameViewCols;
-    int boardViewRow, boardViewCol;
+  void Update(MoveComponent *moveComponent, OffsetComponent *offset, float deltaTime)
+  {
 
-    int playerX, playerY;
-    int playerScrollX, playerScrollY;
+    stateComponent->setState(PlayerStateComponent::Idle);
 
-    int scrollHorizontalLow, scrollHorizontalHigh;
-    int scrollVerticalLow, scrollVerticalHigh;
-
-    GameInput input;
-
-    bool debug_mode;
-
-    Texture *bgTilesTexture;
-    Vector2u bgTextureSize;
-
-    Texture *playerTexture;
-    Player *player;
-
-    Sprite bgSprite;
-
-    IntRect frameSelection;
-
-    AmazeManGame() : window(VideoMode(SCREEN_WIDTH, SCREEN_HEIGHT), "A maze man!")
+    if (input.moveX > 0)
     {
-        window.setFramerateLimit(60);
-
-        debug_mode = 0;
-
-        // 16x16 + 4char-numbered sprites
-        mazeMapAsString = "0001002100210021002100290029002100300031002100210021002100210021000100000000000000000000000000000000000000000000000000000000002100010000001700170017001700000017000000130000001300130013000000210001000000170000000000000000001700000013000000000000001300000021000100000017000000170017001700170000001300000000000000130000002100010000001700000017001700170017000000130013001300130013000000210021000000170000001700170017001700000000000000000000000000000021002100000017000000000000000000000000002500260025000000000000002100240000001700000000000000000000000000270000002800000000000000210021000000170000000000000000000000000025000000270000000000000022002100000017001700170017001700170017001700000017001700170000002100210000000000000000000000000000000000000000000000000000000000210022001700170017003700370037003700370037003700370037003700000021002100340035003400000000000000000000000000000000000000000000002100210036003400330037003700370037003700370037003700370037003700210021002100220021002100210021002100210022002100210021002100210021";
-        mapCols = 16;
-        mapRows = 16;
-
-        tileWidth = 32;
-        tileHeight = 32;
-
-        if (debug_mode)
-        {
-            gameViewWidth = 6 * tileWidth;
-            gameViewHeight = 6 * tileHeight;
-
-            gameViewRow = 2;
-            gameViewCol = 2;
-        }
-        else
-        {
-            gameViewWidth = 10 * tileWidth;
-            gameViewHeight = 10 * tileHeight;
-
-            gameViewRow = 0;
-            gameViewCol = 0;
-        }
-
-        gameViewOffsetX = gameViewRow * tileWidth;
-        gameViewOffsetY = gameViewCol * tileHeight;
-
-        gameViewRows = gameViewHeight / tileHeight;
-        gameViewCols = gameViewWidth / tileWidth;
-
-        boardViewRow = 0;
-        boardViewCol = 0;
-
-        playerScrollX = 0;
-        playerScrollY = 0;
-
-        playerX = 1 * tileWidth;
-        playerY = 1 * tileHeight;
-
-        scrollHorizontalHigh = (gameViewCols - 2) * tileWidth;
-        scrollHorizontalLow = 1 * tileWidth;
-
-        scrollVerticalHigh = (gameViewRows - 2) * tileHeight;
-        scrollVerticalLow = 1 * tileHeight;
-
-        mazeMap = new int *[mapRows];
-        for (int i = 0; i < mapRows; ++i)
-        {
-            mazeMap[i] = new int[mapCols];
-        }
-
-        int idx = 0;
-        for (int i = 0; i < mapRows; ++i)
-        {
-            for (int j = 0; j < mapCols; ++j)
-            {
-                char tileStr[5];
-                for (int ii = 0; ii < 4; ii++)
-                {
-                    tileStr[ii] = mazeMapAsString[idx + ii];
-                }
-                tileStr[4] = '\0';
-                // single char number to int
-                // mazeMap[i][j] = mazeMapAsString[] - '0'; 
-           
-                // 4-char number to int is better
-                mazeMap[i][j] = std::stoi(tileStr); 
-                idx += 4;
-            }
-        }
-
-        // example graphics from opengameart
-
-        bgTilesTexture = loadTextureFile("tiles.png");
-        bgTextureSize = bgTilesTexture->getSize();
-
-        playerTexture = loadTextureFile("player.png");
-        player = new Player(playerTexture);
+      stateComponent->setState(PlayerStateComponent::GoingRight);
+      moveComponent->Move(1, 0, deltaTime);
+      if ((offset->x < moveComponent->map->getMaxScrollX()) and (moveComponent->position.x > (offset->x + SCROLL_BOUND)) and ((offset->x + SCREEN_WIDTH) < (moveComponent->map->mapCols * moveComponent->map->tileWidth)))
+      {
+        offset->x++;
+      }
     }
 
-    void Start()
+    int playersizeX = 20;
+    int playersizeY = 20;
+
+    if (input.moveX < 0)
     {
-        while (window.isOpen())
-        {
-            Event e;
-            while (window.pollEvent(e))
-            {
-                switch (e.type)
-                {
-                case Event::Closed:
-                    window.close();
-                    break;
-
-                case sf::Event::KeyPressed:
-                    switch (e.key.code)
-                    {
-                    case sf::Keyboard::Left:
-                        input.moveX = -1;
-                        break;
-                    case sf::Keyboard::Right:
-                        input.moveX = 1;
-                        break;
-                    case sf::Keyboard::Up:
-                        input.moveY = -1;
-                        break;
-                    case sf::Keyboard::Down:
-                        input.moveY = 1;
-                        break;
-                    case sf::Keyboard::W:
-                        input.keyW = 1;
-                        break;
-                    case sf::Keyboard::S:
-                        input.keyS = 1;
-                        break;
-                    case sf::Keyboard::A:
-                        input.keyA = 1;
-                        break;
-                    case sf::Keyboard::D:
-                        input.keyD = 1;
-                        break;
-                    case sf::Keyboard::X:
-                        input.keyX = 1;
-                        break;
-                    default:
-                        break;
-                    }
-                    break;
-
-                case sf::Event::KeyReleased:
-                    switch (e.key.code)
-                    {
-                    case sf::Keyboard::Left:
-                        input.moveX = 0;
-                        break;
-                    case sf::Keyboard::Right:
-                        input.moveX = 0;
-                        break;
-                    case sf::Keyboard::Up:
-                        input.moveY = 0;
-                        break;
-                    case sf::Keyboard::Down:
-                        input.moveY = 0;
-                        break;
-                    case sf::Keyboard::W:
-                        input.keyW = 0;
-                        break;
-                    case sf::Keyboard::S:
-                        input.keyS = 0;
-                        break;
-                    case sf::Keyboard::A:
-                        input.keyA = 0;
-                        break;
-                    case sf::Keyboard::D:
-                        input.keyD = 0;
-                        break;
-                    case sf::Keyboard::X:
-                        input.keyX = 0;
-                        break;
-                    default:
-                        break;
-                    }
-                    break;
-
-                default:
-                    break;
-                }
-            }
-
-            Update();
-            Render();
-        }
+      moveComponent->Move(-1, 0, deltaTime);
+      stateComponent->setState(PlayerStateComponent::GoingLeft);
+      if (offset->x > 0 and moveComponent->position.x < (offset->x + SCREEN_WIDTH - SCROLL_BOUND - playersizeX) and offset->x > 0)
+      {
+        offset->x--;
+      }
     }
 
-    bool is_collision(int player_x, int player_y)
+    if (input.moveY < 0)
     {
-        int collided = 0;
-        
-        for (int i = 0; i < gameViewRows + 2; ++i)
-        {
-            for (int j = 0; j < gameViewCols + 2; ++j)
-            {
-                if ((boardViewRow - 1 + i >= 0) and (boardViewCol - 1 + j >= 0) and (boardViewCol - 1 + j < mapCols) // if mapCols is 32 then max j is 31 !!!
-                    and (boardViewRow - 1 + i < mapRows))
-                {
-                    if (mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j] > 0)
-                    {
-                        collided = wallCollided(player_x, player_y, player->sizeX, player->sizeY, (j * tileWidth) - playerScrollX - tileWidth, (i * tileHeight) - playerScrollY - tileWidth, tileWidth, tileHeight);
-    
-                        if (collided) {
-                            return 1;
-                        }
-                    }
-                }
-            }
-        }
-        return 0;
+      moveComponent->Move(0, -1, deltaTime);
+      stateComponent->setState(PlayerStateComponent::GoingUp);
+      if (offset->y > 0 and moveComponent->position.y < (offset->y + SCREEN_HEIGHT - SCROLL_BOUND - playersizeY) and offset->y > 0)
+      {
+        offset->y--;
+      }
     }
 
-    bool canGoLeft()
+    if (input.moveY > 0)
     {
-        int screenPlayerX = player->posX;
-        int screenPlayerY = player->posY;
+      moveComponent->Move(0, 1, deltaTime);
+      stateComponent->setState(PlayerStateComponent::GoingDown);
+      if (offset->y < moveComponent->map->getMaxScrollY() and moveComponent->position.y > (offset->y + SCROLL_BOUND) and (offset->y + SCREEN_HEIGHT) < (moveComponent->map->mapRows * moveComponent->map->tileHeight))
+      {
+        offset->y++;
+      }
+    }
+  }
+};
 
-        bool collided = 0;
+class Player : public GameObject
+{
+public:
+  PlayerControllerComponent *playerController;
+  sf::Sprite sprite;
+  AnimationComponent *animationComponent;
+  PlayerStateComponent *stateComponent;
 
-        collided = is_collision(screenPlayerX-1, screenPlayerY);
+  Player(OffsetComponent *offset, PlayerControllerComponent *controller, sf::Texture *texture) : GameObject(offset)
+  {
 
-         if (collided)
+    sprite.setTexture(*texture);
+    stateComponent = new PlayerStateComponent();
+
+    animationComponent = new AnimationComponent();
+    controller->setStateComponent(stateComponent);
+
+    animationComponent->addAnimation(PlayerStateComponent::Idle,
+                                     new Animation(texture, 64, 64, 1, 0, 2 * 64, 5));
+    animationComponent->addAnimation(PlayerStateComponent::GoingRight,
+                                     new Animation(texture, 64, 64, 7, 0, 3 * 64, 5));
+    animationComponent->addAnimation(PlayerStateComponent::GoingLeft,
+                                     new Animation(texture, 64, 64, 7, 0, 1 * 64, 5));
+    animationComponent->addAnimation(PlayerStateComponent::GoingUp,
+                                     new Animation(texture, 64, 64, 7, 0, 0, 5));
+    animationComponent->addAnimation(PlayerStateComponent::GoingDown,
+                                     new Animation(texture, 64, 64, 7, 0, 2 * 64, 5));
+
+    stateComponent->setStateChangeCallback([this](int oldState, int newState)
+                                           { animationComponent->setAnimation(newState); });
+    animationComponent->setAnimation(PlayerStateComponent::Idle);
+    playerController = controller;
+  }
+
+  void Update(float deltaTime) override
+  {
+    playerController->Update(moveComponent, offset, deltaTime);
+    animationComponent->Update(1, sprite);
+  }
+
+  void Render(sf::RenderWindow &window) override
+  {
+    // sf::RectangleShape tile;
+    // tile.setSize(sf::Vector2f(size->w, size->h));
+    // tile.setFillColor(sf::Color(0, 255, 0));
+    // tile.setPosition(position->x - offset->x, position->y - offset->y);
+    // window.draw(tile);
+    sprite.setScale(0.5f, 0.5f);
+    sprite.setPosition(position->x - offset->x - 10, position->y - offset->y - 10);
+    window.draw(sprite);
+  }
+};
+
+class Enemy : public GameObject
+{
+public:
+  sf::Sprite sprite;
+  AIComponent aicomponent;
+
+  Enemy(OffsetComponent *offset, sf::Texture *texture) : GameObject(offset)
+  {
+    sprite.setTexture(*texture);
+    sf::IntRect frameSelection = sf::IntRect(0, 0, 32, 32);
+    sprite.setTextureRect(frameSelection);
+    aicomponent.RandomizeMoveDirection();
+  }
+
+  void Update(float deltaTime) override
+  {
+    if (!moveComponent->Move(aicomponent.dirX, aicomponent.dirY, deltaTime))
+    {
+      aicomponent.RandomizeMoveDirection();
+    }
+  }
+
+  void Render(sf::RenderWindow &window) override
+  {
+    // sf::RectangleShape tile;
+    // tile.setSize(sf::Vector2f(size->w, size->h));
+    // tile.setFillColor(sf::Color(255, 0, 0));
+    // tile.setPosition(position->x - offset->x, position->y - offset->y);
+    // window.draw(tile);
+    // sprite.setScale(0.5f, 0.5f);
+    sprite.setPosition(position->x - offset->x, position->y - offset->y);
+    window.draw(sprite);
+  }
+};
+
+class Game
+{
+public:
+  RenderWindow window;
+  GameInput input;
+
+  OffsetComponent *offset;
+
+  GameMap *gameMap;
+
+  PlayerControllerComponent *playerController;
+
+  std::vector<GameObject *> gameObjects;
+
+  Texture *mapTexture;
+  Texture *playerTexture;
+  Texture *enemyTexture;
+
+  sf::Clock clock;
+
+  GameState currentState = GameState::StartScreen;
+
+  float deltaTime = clock.restart().asSeconds();
+  Game() : window(VideoMode(SCREEN_WIDTH, SCREEN_HEIGHT), "Amazeman!")
+  {
+    srand(static_cast<unsigned>(time(0)));
+
+    window.setFramerateLimit(60);
+
+    mapTexture = loadTextureFile("tiles.png");
+    playerTexture = loadTextureFile("jones.png");
+    enemyTexture = loadTextureFile("enemy.png");
+
+    offset = new OffsetComponent();
+
+    gameMap = new GameMap("0001002100210021002100290029002100300031002100210021002100210021000100000000000000000000000000000000000000000000000000000000002100010000001700170017001700000017000000130000001300130013000000210001000000170000000000000000001700000013000000000000001300000021000100000017000000170017001700170000001300000000000000130000002100010000001700000017001700170017000000130013001300130013000000210021000000170000001700170017001700000000000000000000000000000021002100000017000000000000000000000000002500260025000000000000002100240000001700000000000000000000000000270000002800000000000000210021000000170000000000000000000000000025000000270000000000000022002100000017001700170017001700170017001700000017001700170000002100210000000000000000000000000000000000000000000000000000000000210022001700170017003700370037003700370037003700370037003700000021002100340035003400000000000000000000000000000000000000000000002100210036003400330037003700370037003700370037003700370037003700210021002100220021002100210021002100210022002100210021002100210021", 16, 16, offset, mapTexture);
+
+    playerController = new PlayerControllerComponent(input);
+
+    Player *player = new Player(offset, playerController, playerTexture);
+    player->Init(38, 38, OBJECT_ID_PLAYER, 12, 20);
+    player->moveComponent->SetMap(gameMap);
+    player->moveComponent->objSpeed = 50;
+    AddObject(player);
+
+    Enemy *enemy = new Enemy(offset, enemyTexture);
+    enemy->Init(196, 256, OBJECT_ID_ENEMY, 32, 32);
+    enemy->moveComponent->SetMap(gameMap);
+    enemy->moveComponent->objSpeed = 60;
+    AddObject(enemy);
+
+    enemy = new Enemy(offset, enemyTexture);
+    enemy->Init(196, 256, OBJECT_ID_ENEMY, 32, 32);
+    enemy->moveComponent->SetMap(gameMap);
+    enemy->moveComponent->objSpeed = 65;
+    AddObject(enemy);
+
+    enemy = new Enemy(offset, enemyTexture);
+    enemy->Init(196, 256, OBJECT_ID_ENEMY, 32, 32);
+    enemy->moveComponent->SetMap(gameMap);
+    enemy->moveComponent->objSpeed = 70;
+    AddObject(enemy);
+  }
+
+  void restartGame()
+  {
+    for (auto obj1 : gameObjects)
+    {
+      if (obj1->objId == OBJECT_ID_PLAYER)
+      {
+        obj1->position->x = 38;
+        obj1->position->y = 38;
+        offset->x = 0;
+        offset->y = 0;
+      }
+
+      if (obj1->objId == OBJECT_ID_ENEMY)
+      {
+        obj1->position->x = 196;
+        obj1->position->y = 256;
+      }
+    }
+  }
+
+  void AddObject(GameObject *obj)
+  {
+    gameObjects.push_back(obj);
+  }
+
+  void Start()
+  {
+    while (window.isOpen())
+    {
+      GetEvents();
+      Update();
+      Render();
+    }
+  }
+
+  void GetEvents()
+  {
+    sf::Event e;
+    while (window.pollEvent(e))
+    {
+      switch (e.type)
+      {
+      case sf::Event::Closed:
+        window.close();
+        break;
+
+      case sf::Event::KeyPressed:
+        switch (e.key.code)
         {
-            return 0;
+        case sf::Keyboard::Left:
+          input.moveX = -1;
+          break;
+        case sf::Keyboard::Right:
+          input.moveX = 1;
+          break;
+        case sf::Keyboard::Up:
+          input.moveY = -1;
+          break;
+        case sf::Keyboard::Down:
+          input.moveY = 1;
+          break;
+        case sf::Keyboard::W:
+          input.keyW = 1;
+          break;
+        case sf::Keyboard::S:
+          input.keyS = 1;
+          break;
+        case sf::Keyboard::A:
+          input.keyA = 1;
+          break;
+        case sf::Keyboard::D:
+          input.keyD = 1;
+          break;
+        case sf::Keyboard::X:
+          input.keyX = 1;
+          break;
+        default:
+          break;
         }
-        return 1;
+        break;
+
+      case sf::Event::KeyReleased:
+        switch (e.key.code)
+        {
+        case sf::Keyboard::Left:
+          input.moveX = 0;
+          break;
+        case sf::Keyboard::Right:
+          input.moveX = 0;
+          break;
+        case sf::Keyboard::Up:
+          input.moveY = 0;
+          break;
+        case sf::Keyboard::Down:
+          input.moveY = 0;
+          break;
+        case sf::Keyboard::W:
+          input.keyW = 0;
+          break;
+        case sf::Keyboard::S:
+          input.keyS = 0;
+          break;
+        case sf::Keyboard::A:
+          input.keyA = 0;
+          break;
+        case sf::Keyboard::D:
+          input.keyD = 0;
+          break;
+        case sf::Keyboard::X:
+          input.keyX = 0;
+          break;
+        default:
+          break;
+        }
+        break;
+
+      default:
+        break;
+      }
+    }
+  }
+
+  void RenderStartScreen()
+  {
+    sf::Font font;
+    font.loadFromFile("retro.ttf");
+    sf::Text text("Press X to start", font, 12);
+    text.setFillColor(sf::Color::White);
+    text.setPosition(SCREEN_WIDTH / 2 - 70, SCREEN_HEIGHT / 2);
+    window.draw(text);
+  }
+
+  void RenderGameOverScreen()
+  {
+    sf::Font font;
+    font.loadFromFile("retro.ttf");
+    sf::Text text("Press X to restart", font, 12);
+    text.setFillColor(sf::Color::Red);
+    text.setPosition(SCREEN_WIDTH / 2 - 70, SCREEN_HEIGHT / 2);
+    window.draw(text);
+  }
+
+  void Render()
+  {
+    window.clear(Color(30, 30, 30));
+
+    if (currentState == GameState::StartScreen)
+    {
+      RenderStartScreen();
+    }
+    else if (currentState == GameState::Playing)
+    {
+
+      gameMap->Render(window);
+
+      for (const auto obj : gameObjects)
+      {
+        obj->Render(window);
+      }
+    }
+    else if (currentState == GameState::GameOver)
+    {
+      RenderGameOverScreen();
     }
 
-    bool canGoRight()
+    window.display();
+  }
+
+  void Update()
+  {
+
+    if (currentState == GameState::Playing)
     {
-        int screenPlayerX = player->posX;
-        int screenPlayerY = player->posY;
 
-        bool collided = 0;
+      bool gameOver = 0;
 
-        collided = is_collision(screenPlayerX+1, screenPlayerY);
-
-        if (collided)
+      for (auto obj1 : gameObjects)
+      {
+        for (auto obj2 : gameObjects)
         {
-            return 0;
+          if ((obj1->objId != obj2->objId) && obj1->Collided(obj2))
+          {
+            gameOver = 1;
+            break;
+          }
         }
-        return 1;
-    }
+      }
 
-    bool canGoDown()
+      if (gameOver)
+      {
+        currentState = GameState::GameOver;
+        restartGame();
+        return;
+      }
+
+      float deltaTime = clock.restart().asSeconds();
+
+      for (auto obj : gameObjects)
+      {
+        obj->Update(deltaTime);
+      }
+    }
+    else
     {
-        bool collided = 0;
 
-        collided = is_collision(player->posX, player->posY+1);
-
-        if (collided)
+      if (input.keyX)
+      {
+        input.keyX = 0;
+        if (currentState == GameState::StartScreen)
         {
-            return 0;
+          currentState = GameState::Playing;
         }
-        return 1;
+        else if (currentState == GameState::GameOver)
+        {
+          currentState = GameState::StartScreen;
+        }
+      }
     }
+  }
 
-    bool canGoUp()
+  Texture *loadTextureFile(const char *filename, sf::Color transparencyColor = sf::Color::Transparent)
+  {
+    Texture *texture = new Texture();
+    Image image;
+    if (image.loadFromFile(filename))
     {
-        bool collided = 0;
-
-        collided = is_collision(player->posX, player->posY-1);
-
-        if (collided)
-        {
-            return 0;
-        }
-        return 1;
+      image.createMaskFromColor(transparencyColor);
+      texture->loadFromImage(image);
     }
-
-    bool wallCollided(int objAx, int objAy, int objAw, int objAh, int objBx, int objBy, int objBw, int objBh)
-    {
-        if (debug_mode)
-        {
-            renderTileRed(objAx, objAy, objAw, objAh);
-            renderTileGreen(objBx, objBy, objBw, objBh);
-        }
-
-        if (objAx < objBx + objBw &&
-            objAx + objAw > objBx &&
-            objAy < objBy + objBh &&
-            objAy + objAh > objBy)
-        {
-            if (debug_mode)
-            {
-                // std::cout << "\n"; 
-                // std::cout << "A is at " << objAx << " " << objAy << " => [" << objAw << "][" << objAh << "]" << std::endl;
-                // std::cout << "B is at " << objBx << " " << objBy << " => [" << objBw << "][" << objBh << "]" << std::endl;
-                // std::cout << (objAx < objBx + objBw) << std::endl;
-                // std::cout << (objAx + objAw > objBx) << std::endl;
-                // std::cout << (objAy < objBy + objBh) << std::endl;
-                // std::cout << (objAy + objAh > objBy) << std::endl;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    void Update()
-    {
-        int playerSpeed = 1;
-
-        // MOVE PLAYER
-
-        player->dirX = 0;
-        player->dirY = 0;
-
-        if (input.moveX > 0)
-        {
-            player->dirX = 1;
-
-            if (canGoRight())
-            {
-                playerX = playerX + playerSpeed;
-
-                if (playerX > scrollHorizontalHigh) // reached x max checkpoint
-                {
-                    if (boardViewCol == mapCols - gameViewCols)
-                    {
-                        // it means the player can't scroll the map any further and playerX++ is ok here
-
-                        if (playerScrollX < 0)
-                        { // but if screen was partially scrolled left, we must rewind
-
-                            playerScrollX = playerScrollX + playerSpeed;
-
-                            playerX = scrollHorizontalHigh; // and then we need to keep player still so it doesnt look like he moves faster
-                        }
-                    }
-                    else
-                    {
-                        playerX = scrollHorizontalHigh;
-
-                        playerScrollX = playerScrollX + playerSpeed; // scroll right and keep player at max checkpoint pos
-
-                        if (playerScrollX >= tileWidth) // 1 col scrolled
-                        {
-                            if (boardViewCol < mapCols - gameViewCols) // must be < as 16-6=10 means 10 is last possible boardViewCol
-                            {
-                                boardViewCol++; // move board viewport +1
-                            }
-
-                            playerScrollX = 0; // reset scroll
-                        }
-                    }
-                }
-            }
-        }
-        else if (input.moveX < 0)
-        {
-            player->dirX = -1;
-        
-            if (canGoLeft())
-            {
-                playerX = playerX - playerSpeed;
-
-                if (playerX < scrollHorizontalLow) // reached x min checkpoint
-                {
-                    if (boardViewCol == 0)
-                    {
-                        // it means the player can't scroll the map any further and playerX-- is ok here
-
-                        if (playerScrollX > 0)
-                        { // but if screen was partially scrolled right, we must rewind
-                            playerScrollX = playerScrollX - playerSpeed;
-                            playerX = scrollHorizontalLow;
-                        }
-                    }
-                    else
-                    {
-                        playerX = scrollHorizontalLow;
-
-                        // scroll left and keep player at min checkpoint pos
-                        playerScrollX = playerScrollX - playerSpeed;
-
-                        if (abs(playerScrollX) >= tileWidth) // 1 col scrolled
-                        {
-                            if (boardViewCol > 0) // must be > as 0 is lowest possible boardViewCol
-                            {
-                                boardViewCol--; // move board viewport -1
-                            }
-
-                            playerScrollX = 0; // reset scroll
-                        }
-                    }
-                }
-            }
-        }
-
-        if (input.moveY > 0)
-        {
-            if (canGoDown())
-            {
-                playerY = playerY + playerSpeed;
-            }
-
-            player->dirY = 1;
-
-            if (playerY > scrollVerticalHigh)
-            {
-                if (boardViewRow == mapRows - gameViewRows)
-                {
-                    if (playerScrollY < 0)
-                    {
-                        playerScrollY = playerScrollY + playerSpeed;
-                        playerY = scrollVerticalHigh;
-                    }
-                }
-                else
-                {
-                    playerY = scrollVerticalHigh;
-
-                    playerScrollY = playerScrollY + playerSpeed;
-
-                    if (playerScrollY >= tileWidth)
-                    {
-                        if (boardViewRow < mapRows - gameViewRows)
-                        {
-                            boardViewRow++;
-                        }
-
-                        playerScrollY = 0;
-                    }
-                }
-            }
-        }
-        else if (input.moveY < 0)
-        {
-            if (canGoUp())
-            {
-                playerY = playerY - playerSpeed;
-            }
-
-            player->dirY = -1;
-
-            if (playerY < scrollVerticalLow) // reached y min checkpoint
-            {
-                if (boardViewRow == 0)
-                {
-                    // it means the player can't scroll the map any further and playerY-- is ok here
-
-                    if (playerScrollY > 0)
-                    { // but if screen was partially scrolled up, we must rewind
-                        playerScrollY = playerScrollY - playerSpeed;
-                        playerY = scrollVerticalLow;
-                    }
-                }
-                else
-                {
-                    playerY = scrollVerticalLow;
-
-                    playerScrollY = playerScrollY - playerSpeed; // scroll down and keep player at min checkpoint pos
-
-                    if (abs(playerScrollY) == tileHeight) // 1 row scrolled
-                    {
-                        if (boardViewRow > 0) // must be > as 0 is lowest possible boardViewRow
-                        {
-                            boardViewRow--; // move board viewport -1
-                        }
-
-                        playerScrollY = 0; // reset Y scroll
-                    }
-                }
-            }
-        }
-
-        player->posX = playerX;
-        player->posY = playerY;
-
-        player->Update();
-
-        // MOVE MAP (debug)
-
-        if (input.keyD)
-        {
-            if (boardViewCol < mapCols - gameViewCols)
-            {
-                boardViewCol++;
-            }
-            input.keyD = 0;
-        }
-
-        if (input.keyA)
-        {
-            if (boardViewCol > 0)
-            {
-                boardViewCol--;
-            }
-            input.keyA = 0;
-        }
-
-        if (input.keyS)
-        {
-            if (boardViewRow < mapRows - gameViewRows)
-            {
-                boardViewRow++;
-            }
-            input.keyS = 0;
-        }
-
-        if (input.keyW)
-        {
-            if (boardViewRow > 0)
-            {
-                boardViewRow--;
-            }
-            input.keyW = 0;
-        }
-
-        if (input.keyX)
-        {
-            if (debug_mode)
-            {
-                debug_mode = 0;
-            }
-            else
-            {
-                debug_mode = 1;
-            }
-            input.keyX = 0;
-        }
-    }
-
-    void Render()
-    {
-        window.clear(Color(0, 0, 0));
-
-        renderMazeMap();
-
-        renderGameViewFrame();
-
-        // renderCompleteMazeMapWithoutAnyOffsets();
-
-        renderPlayer();
-
-        if (debug_mode) {
-            renderDebugGrid();
-
-            canGoRight();
-            canGoLeft();
-        }
-
-        window.display();
-    }
-
-    void renderPlayer()
-    {
-        // if (debug_mode) {
-        // sf::RectangleShape tile;
-        // tile.setSize(sf::Vector2f(player->sizeX, player->sizeY));
-        // tile.setFillColor(sf::Color(200, 150, 0));
-        // tile.setPosition(gameViewOffsetX + playerX, gameViewOffsetY + playerY);
-        // window.draw(tile);
-        // }
-
-        // doesnt matter now / see view rows and border frame
-        // player->posX = player->posX + gameViewOffsetX;// - 32;
-        // player->posY = player->posY + gameViewOffsetY;// - 32;
-
-        player->Render(window);
-    }
-
-    void renderTile(int x, int y, int w, int h)
-    {
-        sf::RectangleShape tile;
-        tile.setSize(sf::Vector2f(w, h));
-        tile.setFillColor(sf::Color(0, 0, 220));
-        tile.setPosition(gameViewOffsetX + x, gameViewOffsetY + y);
-        window.draw(tile);
-    }
-
-    void renderTileRed(int x, int y, int w, int h)
-    {
-        sf::RectangleShape tile;
-        tile.setSize(sf::Vector2f(w, h));
-        tile.setFillColor(sf::Color(220, 0, 0));
-        tile.setPosition(x, y);
-        window.draw(tile);
-    }
-
-    void renderTileGreen(int x, int y, int w, int h)
-    {
-        sf::RectangleShape tile;
-        tile.setSize(sf::Vector2f(w, h));
-        tile.setFillColor(sf::Color(0, 220, 0));
-        tile.setPosition(x, y);
-        window.draw(tile);
-    }
-
-    void renderGameViewFrame()
-    {
-        sf::RectangleShape rectangle(sf::Vector2f(gameViewWidth, gameViewHeight));
-        rectangle.setPosition(gameViewOffsetX, gameViewOffsetY);
-        rectangle.setFillColor(sf::Color::Transparent);
-        rectangle.setOutlineThickness(1);
-        rectangle.setOutlineColor(sf::Color(150, 0, 0));
-        window.draw(rectangle);
-    }
-
-    void renderMazeMap()
-    {
-        // std::cout << "boardViewCol: " << boardViewCol << " playerX: " << playerX << " playerScrollX: " << playerScrollX << std::endl;
-
-        if (debug_mode)
-        {
-            // shows +1 extra row/col outside gameView box
-            for (int i = 0; i < gameViewRows + 2; ++i)
-            {
-                for (int j = 0; j < gameViewCols + 2; ++j)
-                {
-                    if ((boardViewRow - 1 + i >= 0) and (boardViewCol - 1 + j >= 0) and (boardViewCol - 1 + j < mapCols) // if mapCols is 32 then max j is 31 !!!
-                        and (boardViewRow - 1 + i < mapRows))
-                    {
-                        if (mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j] > 0)
-                        {
-                            renderTile(
-                                (j * tileWidth) - playerScrollX - tileWidth, // shows -1 col
-                                (i * tileHeight) - playerScrollY - tileWidth,
-                                tileWidth, tileHeight);
-                        }
-                    }
-                }
-            }
-
-            if (0) // debug
-            {
-                // top
-                sf::RectangleShape tile;
-                tile.setSize(sf::Vector2f(SCREEN_WIDTH, tileHeight * 2));
-                tile.setFillColor(sf::Color(0, 0, 150));
-                tile.setPosition(0, 0);
-                window.draw(tile);
-
-                // left
-                tile.setSize(sf::Vector2f(tileHeight * 2, SCREEN_HEIGHT));
-                tile.setFillColor(sf::Color(0, 0, 150));
-                tile.setPosition(0, tileHeight * 2);
-                window.draw(tile);
-
-                // right
-                tile.setSize(sf::Vector2f(tileHeight * 2, SCREEN_HEIGHT));
-                tile.setFillColor(sf::Color(0, 0, 150));
-                tile.setPosition(tileHeight * 8, tileHeight * 2);
-                window.draw(tile);
-
-                // bottom
-                tile.setSize(sf::Vector2f(SCREEN_WIDTH, tileHeight * 2));
-                tile.setFillColor(sf::Color(0, 0, 150));
-                tile.setPosition(0, tileHeight * 8);
-                window.draw(tile);
-            }
-        }
-        else
-        {
-            // shows +1 extra row/col outside gameView box
-            for (int i = 0; i < gameViewRows + 2; ++i)
-            {
-                for (int j = 0; j < gameViewCols + 2; ++j)
-                {
-                    if ((boardViewRow - 1 + i >= 0) and (boardViewCol - 1 + j >= 0) and (boardViewCol - 1 + j < mapCols) // if mapCols is 32 then max j is 31 !!!
-                        and (boardViewRow - 1 + i < mapRows))
-                    {
-                        if (mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j] > 0)
-                        {
-                            renderTexturedTile(
-                                (j * tileWidth) - playerScrollX - tileWidth, // shows -1 col
-                                (i * tileHeight) - playerScrollY - tileWidth,
-                                tileWidth, tileHeight, mazeMap[boardViewRow - 1 + i][boardViewCol - 1 + j]);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    void renderCompleteMazeMapWithoutAnyOffsets()
-    {
-        for (int i = 0; i < mapRows; ++i)
-        {
-            for (int j = 0; j < mapCols; ++j)
-            {
-                if (mazeMap[i][j] == 1)
-                {
-                    // bug here as renderTile uses gameViewOffsetX anyway
-                    renderTile(j * tileWidth, i * tileHeight, tileWidth, tileHeight);
-                }
-            }
-        }
-    }
-
-    void renderDebugGrid() 
-    {
-        int tileSize = 32;
-        sf::Color gridColor(100, 100, 100);
-
-        for (int i = 0; i < gameViewCols + 1; ++i) {
-            sf::Vertex line[] =
-            {
-                sf::Vertex(sf::Vector2f(i * tileSize, 0)),
-                sf::Vertex(sf::Vector2f(i * tileSize, (gameViewRows + 1) * tileSize))
-            };
-            line[0].color = gridColor;
-            line[1].color = gridColor;
-            window.draw(line, 2, sf::Lines);
-        }
-
-        for (int j = 0; j < gameViewRows + 1; ++j) {
-            sf::Vertex line[] =
-            {
-                sf::Vertex(sf::Vector2f(0, j * tileSize)),
-                sf::Vertex(sf::Vector2f((gameViewCols + 1) * tileSize, j * tileSize))
-            };
-            line[0].color = gridColor;
-            line[1].color = gridColor;
-            window.draw(line, 2, sf::Lines);
-        }
-    }
-
-    void renderTexturedTile(int x, int y, int w, int h, int tile_index)
-    {
-        tile_index--; // as 1 is actially index 0 in tiles array
-        int bgCols = bgTextureSize.x / 32; // TODO 64 is tile size in texture file, not in world map
-        int row_index = tile_index / bgCols;
-        int col_index = tile_index % bgCols;
-        bgSprite.setTexture(*bgTilesTexture);
-        frameSelection = IntRect(col_index * w, row_index * h, w, h);
-        bgSprite.setTextureRect(frameSelection);
-        bgSprite.setPosition(gameViewOffsetX + x, gameViewOffsetY + y);
-        window.draw(bgSprite);
-    }
-
-    Texture *loadTextureFile(const char *filename, sf::Color transparencyColor = sf::Color::Transparent)
-    {
-        Texture *tex = new Texture();
-        Image img;
-        if (img.loadFromFile(filename))
-        {
-            img.createMaskFromColor(transparencyColor);
-            tex->loadFromImage(img);
-        }
-        return tex;
-    }
-
-    ~AmazeManGame()
-    {
-        int n = 4;
-        for (int i = 0; i < n; ++i)
-        {
-            delete[] mazeMap[i];
-        }
-        delete[] mazeMap;
-        
-        delete bgTilesTexture;
-        delete player;
-        delete playerTexture;
-    }
+    return texture;
+  }
 };
 
 int main()
 {
-    AmazeManGame game;
-    game.Start();
-    return 0;
+  Game game;
+  game.Start();
+  return 0;
 }
