@@ -11,6 +11,7 @@ const int SCREEN_HEIGHT = 320;
 
 const int OBJECT_ID_PLAYER = 1;
 const int OBJECT_ID_ENEMY = 2;
+const int OBJECT_ID_BULLET = 3;
 
 const int SCROLL_BOUND = 224;
 
@@ -43,11 +44,19 @@ public:
   sf::IntRect frameSelection;
   int frameWidth, frameHeight, framesCount;
   float delay, timer;
+  bool mirrored;
 
-  Animation(sf::Texture *texture, int frameWidth, int frameHeight, int framesCount, int firstFrameX, int firstFrameY, float animationDelay)
-      : texture(texture), frameWidth(frameWidth), frameHeight(frameHeight), framesCount(framesCount), delay(animationDelay), timer(0)
+  Animation(sf::Texture *texture, int frameWidth, int frameHeight, int framesCount, int firstFrameX, int firstFrameY, float animationDelay, float timer = 0, bool mirrored = 0)
+      : texture(texture), frameWidth(frameWidth), frameHeight(frameHeight), framesCount(framesCount), delay(animationDelay), timer(0), mirrored(mirrored)
   {
-    frameSelection = sf::IntRect(firstFrameX, firstFrameY, frameWidth, frameHeight);
+    if (mirrored)
+    {
+      frameSelection = sf::IntRect(frameWidth, firstFrameY, -frameWidth, frameHeight);
+    }
+    else
+    {
+      frameSelection = sf::IntRect(firstFrameX, firstFrameY, frameWidth, frameHeight);
+    }
   }
 
   void Update(float deltaTime)
@@ -69,7 +78,18 @@ public:
 private:
   void nextFrame()
   {
-    frameSelection.left = (frameSelection.left + frameWidth) % (frameWidth * framesCount);
+    if (mirrored)
+    {
+      frameSelection.left += frameWidth;
+      if (frameSelection.left > (frameWidth * framesCount))
+      {
+        frameSelection.left = frameWidth;
+      }
+    }
+    else
+    {
+      frameSelection.left = (frameSelection.left + frameWidth) % (frameWidth * framesCount);
+    }
   }
 };
 
@@ -176,7 +196,11 @@ public:
     GoingUp = 1,
     GoingDown,
     GoingLeft,
-    GoingRight
+    GoingRight,
+    IdleUp,
+    IdleDown,
+    IdleRight,
+    IdleLeft,
   };
 
   void setState(int newState) override
@@ -194,7 +218,11 @@ private:
            state == GoingUp ||
            state == GoingDown ||
            state == GoingLeft ||
-           state == GoingRight;
+           state == GoingRight ||
+           state == IdleLeft ||
+           state == IdleRight ||
+           state == IdleUp ||
+           state == IdleDown;
   }
 };
 
@@ -377,6 +405,7 @@ public:
   GameMap *map;
   int objSizeX, objSizeY;
   float objSpeed = 1;
+  int lastX = 0, lastY = 0;
 
   MoveComponent(PositionComponent &pos, GameMap *map = nullptr, int objSizeX = 0, int objSizeY = 0)
       : position(pos), map(map), objSizeX(objSizeX), objSizeY(objSizeY) {}
@@ -409,14 +438,14 @@ public:
   SizeComponent *size;
   MoveComponent *moveComponent;
   int objId;
-
+  int alive;
   GameObject(OffsetComponent *offset) : offset(offset)
   {
     position = new PositionComponent();
     size = new SizeComponent();
     size->w = 20;
     size->h = 20;
-
+    alive = 1;
     moveComponent = nullptr;
   }
 
@@ -455,6 +484,98 @@ public:
   }
 };
 
+class GameObjectManager
+{
+private:
+  std::vector<GameObject *> gameObjects;
+
+public:
+  void addGameObject(GameObject *object)
+  {
+    gameObjects.push_back(object);
+  }
+
+  const std::vector<GameObject *> &getAllGameObjects() const
+  {
+    // for render
+    return gameObjects;
+  }
+
+  std::vector<GameObject *> getAllGameObjectsForUpdate() const
+  {
+    // for update
+    return gameObjects;
+  }
+
+  void eraseGameObject(GameObject *object)
+  {
+    auto it = std::find(gameObjects.begin(), gameObjects.end(), object);
+    if (it != gameObjects.end())
+    {
+      delete *it;
+      gameObjects.erase(it);
+    }
+  }
+};
+
+class Bullet : public GameObject
+{
+public:
+  int dirX, dirY;
+
+  Bullet(OffsetComponent *offset) : GameObject(offset)
+  {
+    dirX = 0;
+    dirY = 0;
+  }
+
+  void Update(float deltaTime) override
+  {
+    if (!moveComponent->Move(dirX, dirY, deltaTime))
+    {
+      alive = 0;
+    }
+  }
+
+  void Render(sf::RenderWindow &window) override
+  {
+    sf::RectangleShape tile;
+    tile.setSize(sf::Vector2f(size->w, size->h));
+    tile.setFillColor(sf::Color(255, 255, 255));
+    tile.setPosition(position->x - offset->x, position->y - offset->y);
+    window.draw(tile);
+  }
+};
+
+class ShootingComponent
+{
+public:
+  OffsetComponent *offset;
+  GameObjectManager *manager;
+  int bulletsNum, bulletsMax;
+
+  ShootingComponent(OffsetComponent *offset, GameObjectManager *manager) : offset(offset), manager(manager)
+  {
+    bulletsNum = 0;
+    bulletsMax = 3;
+  }
+
+  void shoot(MoveComponent *moveComponent)
+  {
+    if (bulletsNum < bulletsMax && (moveComponent->lastX || moveComponent->lastY))
+    {
+      Bullet *bullet = new Bullet(offset);
+      bullet->Init(moveComponent->position.x, moveComponent->position.y, OBJECT_ID_BULLET, 2, 2);
+      bullet->dirX = moveComponent->lastX;
+      bullet->dirY = moveComponent->lastY;
+      bullet->moveComponent->SetMap(moveComponent->map);
+      bullet->moveComponent->objSpeed = 300;
+      manager->addGameObject(bullet);
+      bulletsNum++;
+    }
+  }
+};
+
 class GameInput
 {
 public:
@@ -468,7 +589,8 @@ class PlayerControllerComponent
 public:
   GameInput &input;
   PlayerStateComponent *stateComponent;
-  PlayerControllerComponent(GameInput &input) : input(input)
+  ShootingComponent *playerShootingComponent;
+  PlayerControllerComponent(GameInput &input, ShootingComponent *playerShootingComponent) : input(input), playerShootingComponent(playerShootingComponent)
   {
     stateComponent = nullptr;
   }
@@ -480,13 +602,33 @@ public:
 
   void Update(MoveComponent *moveComponent, OffsetComponent *offset, float deltaTime)
   {
-
-    stateComponent->setState(PlayerStateComponent::Idle);
+    if (moveComponent->lastX > 0)
+    {
+      stateComponent->setState(PlayerStateComponent::IdleRight);
+    }
+    else if (moveComponent->lastX < 0)
+    {
+      stateComponent->setState(PlayerStateComponent::IdleLeft);
+    }
+    else if (moveComponent->lastY > 0)
+    {
+      stateComponent->setState(PlayerStateComponent::IdleDown);
+    }
+    else if (moveComponent->lastY < 0)
+    {
+      stateComponent->setState(PlayerStateComponent::IdleUp);
+    }
+    else
+    {
+      stateComponent->setState(PlayerStateComponent::Idle);
+    }
 
     if (input.moveX > 0)
     {
       stateComponent->setState(PlayerStateComponent::GoingRight);
       moveComponent->Move(1, 0, deltaTime);
+      moveComponent->lastX = 1;
+      moveComponent->lastY = 0;
       if ((offset->x < moveComponent->map->getMaxScrollX()) and (moveComponent->position.x > (offset->x + SCROLL_BOUND)) and ((offset->x + SCREEN_WIDTH) < (moveComponent->map->mapCols * moveComponent->map->tileWidth)))
       {
         offset->x++;
@@ -500,6 +642,8 @@ public:
     {
       moveComponent->Move(-1, 0, deltaTime);
       stateComponent->setState(PlayerStateComponent::GoingLeft);
+      moveComponent->lastX = -1;
+      moveComponent->lastY = 0;
       if (offset->x > 0 and moveComponent->position.x < (offset->x + SCREEN_WIDTH - SCROLL_BOUND - playersizeX) and offset->x > 0)
       {
         offset->x--;
@@ -510,6 +654,8 @@ public:
     {
       moveComponent->Move(0, -1, deltaTime);
       stateComponent->setState(PlayerStateComponent::GoingUp);
+      moveComponent->lastX = 0;
+      moveComponent->lastY = -1;
       if (offset->y > 0 and moveComponent->position.y < (offset->y + SCREEN_HEIGHT - SCROLL_BOUND - playersizeY) and offset->y > 0)
       {
         offset->y--;
@@ -520,10 +666,18 @@ public:
     {
       moveComponent->Move(0, 1, deltaTime);
       stateComponent->setState(PlayerStateComponent::GoingDown);
+      moveComponent->lastX = 0;
+      moveComponent->lastY = 1;
       if (offset->y < moveComponent->map->getMaxScrollY() and moveComponent->position.y > (offset->y + SCROLL_BOUND) and (offset->y + SCREEN_HEIGHT) < (moveComponent->map->mapRows * moveComponent->map->tileHeight))
       {
         offset->y++;
       }
+    }
+
+    if (input.keyX)
+    {
+      playerShootingComponent->shoot(moveComponent);
+      input.keyX = 0;
     }
   }
 };
@@ -538,7 +692,6 @@ public:
 
   Player(OffsetComponent *offset, PlayerControllerComponent *controller, sf::Texture *texture) : GameObject(offset)
   {
-
     sprite.setTexture(*texture);
     stateComponent = new PlayerStateComponent();
 
@@ -546,15 +699,24 @@ public:
     controller->setStateComponent(stateComponent);
 
     animationComponent->addAnimation(PlayerStateComponent::Idle,
-                                     new Animation(texture, 64, 64, 1, 0, 2 * 64, 5));
+                                     new Animation(texture, 64, 64, 1, 4 * 64, 2 * 64, 5));
     animationComponent->addAnimation(PlayerStateComponent::GoingRight,
-                                     new Animation(texture, 64, 64, 7, 0, 3 * 64, 5));
+                                     new Animation(texture, 64, 64, 4, 0, 2 * 64, 5));
     animationComponent->addAnimation(PlayerStateComponent::GoingLeft,
-                                     new Animation(texture, 64, 64, 7, 0, 1 * 64, 5));
+                                     new Animation(texture, 64, 64, 4, 0, 2 * 64, 5, 0, 1));
     animationComponent->addAnimation(PlayerStateComponent::GoingUp,
-                                     new Animation(texture, 64, 64, 7, 0, 0, 5));
+                                     new Animation(texture, 64, 64, 4, 0, 0, 5));
     animationComponent->addAnimation(PlayerStateComponent::GoingDown,
-                                     new Animation(texture, 64, 64, 7, 0, 2 * 64, 5));
+                                     new Animation(texture, 64, 64, 4, 0, 1 * 64, 5));
+
+    animationComponent->addAnimation(PlayerStateComponent::IdleRight,
+                                     new Animation(texture, 64, 64, 1, 4 * 64, 2 * 64, 5));
+    animationComponent->addAnimation(PlayerStateComponent::IdleLeft,
+                                     new Animation(texture, 64, 64, 1, 4 * 64, 2 * 64, 5, 0, 1));
+    animationComponent->addAnimation(PlayerStateComponent::IdleUp,
+                                     new Animation(texture, 64, 64, 1, 4 * 64, 0, 5));
+    animationComponent->addAnimation(PlayerStateComponent::IdleDown,
+                                     new Animation(texture, 64, 64, 1, 4 * 64, 1 * 64, 5));
 
     stateComponent->setStateChangeCallback([this](int oldState, int newState)
                                            { animationComponent->setAnimation(newState); });
@@ -628,15 +790,18 @@ public:
 
   PlayerControllerComponent *playerController;
 
-  std::vector<GameObject *> gameObjects;
+  GameObjectManager *objManager;
 
   Texture *mapTexture;
   Texture *playerTexture;
   Texture *enemyTexture;
 
+  Player *player;
+ 
   sf::Clock clock;
 
   GameState currentState = GameState::StartScreen;
+  ShootingComponent *playerShootingComponent;
 
   float deltaTime = clock.restart().asSeconds();
   Game() : window(VideoMode(SCREEN_WIDTH, SCREEN_HEIGHT), "Amazeman!")
@@ -646,16 +811,19 @@ public:
     window.setFramerateLimit(60);
 
     mapTexture = loadTextureFile("tiles.png");
-    playerTexture = loadTextureFile("jones.png");
+    playerTexture = loadTextureFile("archer.png");
     enemyTexture = loadTextureFile("enemy.png");
+
+    objManager = new GameObjectManager();
 
     offset = new OffsetComponent();
 
     gameMap = new GameMap("0001002100210021002100290029002100300031002100210021002100210021000100000000000000000000000000000000000000000000000000000000002100010000001700170017001700000017000000130000001300130013000000210001000000170000000000000000001700000013000000000000001300000021000100000017000000170017001700170000001300000000000000130000002100010000001700000017001700170017000000130013001300130013000000210021000000170000001700170017001700000000000000000000000000000021002100000017000000000000000000000000002500260025000000000000002100240000001700000000000000000000000000270000002800000000000000210021000000170000000000000000000000000025000000270000000000000022002100000017001700170017001700170017001700000017001700170000002100210000000000000000000000000000000000000000000000000000000000210022001700170017003700370037003700370037003700370037003700000021002100340035003400000000000000000000000000000000000000000000002100210036003400330037003700370037003700370037003700370037003700210021002100220021002100210021002100210022002100210021002100210021", 16, 16, offset, mapTexture);
 
-    playerController = new PlayerControllerComponent(input);
+    playerShootingComponent = new ShootingComponent(offset, objManager);
+    playerController = new PlayerControllerComponent(input, playerShootingComponent);
 
-    Player *player = new Player(offset, playerController, playerTexture);
+    player = new Player(offset, playerController, playerTexture);
     player->Init(38, 38, OBJECT_ID_PLAYER, 12, 20);
     player->moveComponent->SetMap(gameMap);
     player->moveComponent->objSpeed = 50;
@@ -682,7 +850,7 @@ public:
 
   void restartGame()
   {
-    for (auto obj1 : gameObjects)
+    for (auto obj1 : objManager->getAllGameObjects())
     {
       if (obj1->objId == OBJECT_ID_PLAYER)
       {
@@ -698,11 +866,12 @@ public:
         obj1->position->y = 256;
       }
     }
+    playerShootingComponent->bulletsNum = 0;
   }
 
   void AddObject(GameObject *obj)
   {
-    gameObjects.push_back(obj);
+    objManager->addGameObject(obj);
   }
 
   void Start()
@@ -835,7 +1004,7 @@ public:
 
       gameMap->Render(window);
 
-      for (const auto obj : gameObjects)
+      for (const auto obj : objManager->getAllGameObjects())
       {
         obj->Render(window);
       }
@@ -853,17 +1022,27 @@ public:
 
     if (currentState == GameState::Playing)
     {
-
       bool gameOver = 0;
 
-      for (auto obj1 : gameObjects)
+      for (auto obj1 : objManager->getAllGameObjects())
       {
-        for (auto obj2 : gameObjects)
+        for (auto obj2 : objManager->getAllGameObjects())
         {
           if ((obj1->objId != obj2->objId) && obj1->Collided(obj2))
           {
-            gameOver = 1;
-            break;
+            if (obj1->objId == OBJECT_ID_PLAYER && obj2->objId == OBJECT_ID_ENEMY)
+            {
+
+              gameOver = 1;
+              break;
+            }
+
+            if (obj1->objId == OBJECT_ID_BULLET && obj2->objId == OBJECT_ID_ENEMY)
+            {
+              obj1->alive = 0;
+              obj2->alive = 0;
+              break;
+            }
           }
         }
       }
@@ -876,15 +1055,30 @@ public:
       }
 
       float deltaTime = clock.restart().asSeconds();
-
-      for (auto obj : gameObjects)
+      for (auto obj : objManager->getAllGameObjectsForUpdate())
       {
         obj->Update(deltaTime);
+      }
+
+      for (auto it = objManager->getAllGameObjects().begin(); it != objManager->getAllGameObjects().end();)
+      {
+        if ((*it)->alive == 0)
+        {
+          if ((*it)->objId == OBJECT_ID_BULLET)
+          {
+            playerShootingComponent->bulletsNum--;
+          }
+          objManager->eraseGameObject((*it));
+          break;
+        }
+        else
+        {
+          ++it;
+        }
       }
     }
     else
     {
-
       if (input.keyX)
       {
         input.keyX = 0;
