@@ -6,7 +6,7 @@
 
 My goal was to figure out by myself how to implement map scrolling. 
 
-DONE
+Features:
 - importing map from the [editor](https://github.com/gamedevnull/2dmapeditor)
 - partial map rendering in the viewport
 - scrolling when the player moves around
